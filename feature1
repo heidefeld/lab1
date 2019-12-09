@@ -1,0 +1,83 @@
+from struct import pack, unpack  from binascii import unhexlify  from time import sleep # ============================ # Работа с ключами # ============================ 
+ 
+# Генератор 52 16-битных ключей из 128 битного ключа def generate_subkeys(key):     # Упаковка всех байтов в одну большую переменную путем смещения влево каждого байта     bigkey = 0     for b in key:         assert 0 <= b <= 0xFF         bigkey = (bigkey << 8) | b     assert 0 <= bigkey < (1 << 128)          # Циклически смещаем ключ на 25 бит влево     bigkey = (bigkey << 25) | (bigkey >> 103)          # Разбиваем на блоки по 16 бит и генерируем подключи     result = []     for i in range(8 * 6 + 4):         offset = (i * 16 + i // 8 * 25) % 128         result.append((bigkey >> (128 - offset)) & 0xFFFF)     return tuple(result) 
+ 
+# Генератор подключей для расшифровки 
+
+ 
+ 
+def generate_decrypt_subkeys(key):     assert isinstance(key, tuple) and len(key) % 6 == 4     result = []     result.append(_reciprocal(key[-4]))     result.append(_negate(key[-3]))     result.append(_negate(key[-2]))     result.append(_reciprocal(key[-1]))     result.append(key[-6])     result.append(key[-5])          for i in range(1, 8):         j = i * 6         result.append(_reciprocal(key[-j - 4]))         result.append(_negate(key[-j - 2]))         result.append(_negate(key[-j - 3]))         result.append(_reciprocal(key[-j - 1]))         result.append(key[-j - 6])         result.append(key[-j - 5])          result.append(_reciprocal(key[0]))     result.append(_negate(key[1]))     result.append(_negate(key[2]))     result.append(_reciprocal(key[3]))     return tuple(result) 
+ 
+ 
+# ============================ # Шифратор # ============================ 
+ 
+def crypt_block(block, key, direction):     assert isinstance(block, list) and len(block) == 8     assert isinstance(key, list) and len(key) == 16     assert direction in ("encrypt", "decrypt") 
+ 
+    print("Hex representation | Text | Stage")     print("------------------------+----------+----------")     print("{hex} | {plain} | INPUT".format(         plain=to_printable(block),         hex=bstr2hex(block)     ))          # Генерируем подключи     keyschedule = generate_subkeys(key)     if direction == "decrypt":         keyschedule = generate_decrypt_subkeys(keyschedule)          # Делим блок на 4 части по 2 байта     w = block[0] << 8 | block[1]     x = block[2] << 8 | block[3]     y = block[4] << 8 | block[5]     z = block[6] << 8 | block[7]          # Проводим основные 8 раундов шифрования     for i in range(8):         j = i * 6 
+
+ 
+ 
+        w = _multiply(w, keyschedule[j + 0])         x = _add(x, keyschedule[j + 1])         y = _add(y, keyschedule[j + 2])         z = _multiply(z, keyschedule[j + 3])         u = _multiply(w ^ y, keyschedule[j + 4])         v = _multiply(_add(x ^ z, u), keyschedule[j + 5])         u = _add(u, v)         w ^= v         x ^= u         y ^= v         z ^= u         x, y = y, x 
+ 
+        print_block_info(w, x, y, z, "ROUND {}".format(i+1))          # Добиваем шифр последним раундом     x, y = y, x     w = _multiply(w, keyschedule[-4])     x = _add(x, keyschedule[-3])     y = _add(y, keyschedule[-2])     z = _multiply(z, keyschedule[-1]) 
+ 
+    print_block_info(w, x, y, z, "FINISH HIM")     print("\n\n")          # Serialize the final block as a bytelist in big endian     return [         w >> 8, w & 0xFF,         x >> 8, x & 0xFF,         y >> 8, y & 0xFF,         z >> 8, z & 0xFF] 
+ 
+ 
+ 
+# ======================================= # Простые бинарные операции # ======================================= 
+ 
+# Сложение по модулю 2^16+1 def _add(x, y):     assert 0 <= x <= 0xFFFF     assert 0 <= y <= 0xFFFF     return (x + y) & 0xFFFF 
+ 
+ 
+# Умножение по модулю 2^16+1 def _multiply(x, y):     assert 0 <= x <= 0xFFFF     assert 0 <= y <= 0xFFFF     if x == 0x0000:         x = 0x10000     if y == 0x0000:         y = 0x10000     z = (x * y) % 0x10001     if z == 0x10000:         z = 0x0000 
+
+ 
+ 
+    assert 0 <= z <= 0xFFFF     return z 
+ 
+# Отрицание def _negate(x):     assert 0 <= x <= 0xFFFF     return (-x) & 0xFFFF 
+ 
+ 
+# Мультипликативная инверсия def _reciprocal(x):     assert 0 <= x <= 0xFFFF     if x == 0:         return 0     else:         return pow(x, 0xFFFF, 0x10001) 
+ 
+# ======================================= # Вывод # ======================================= 
+ 
+def bstr2hex(s):     return " ".join("{:02x}".format(c) for c in s) 
+ 
+def str2hex(s):     return " ".join("{:02x}".format(ord(c)) for c in s) 
+ 
+def hex2bstr(h):     return unhexlify(h.replace(' ', ''))       def hex2str(h):     return unhexlify(h.replace(' ', '')).decode('utf-8') 
+ 
+def to_printable(b_str):      result = ''     printable_ascii = range(32, 127)     for b in list(b_str):         if b in printable_ascii:              result += chr(b)         else:             result += '�'     return result 
+ 
+def print_block_info(w, x, y, z, label):     block_divided = []      for bl in [w, x, y, z]:         block_divided.append(bl >> 8)         block_divided.append(bl & 0xff) 
+ 
+    print("{hex} | {plain} | {label}".format(         plain=to_printable(block_divided),         hex=bstr2hex(block_divided),         label=label     )) 
+ 
+ 
+
+ 
+ 
+# =================== # Хелперы # =================== 
+ 
+def encryptText(text, key):     print("Шифрование")     while len(text) % 8 != 0:         text += " " 
+ 
+    res = []     for i in range(int(len(text)/8)):         block = text[8*i:8*(i+1)].encode("utf-8")         res.extend(crypt_block(list(block), list(key), "encrypt")) 
+ 
+    return res 
+ 
+def decryptText(crypted, key):     print("Расшифровка")     res = ""     for i in range(int(len(crypted)/8)):         block = crypted[8*i:8*(i+1)]         res += bytes(crypt_block(block, list(key), "decrypt")).decode("utf-8") 
+ 
+    return res 
+ 
+ 
+ 
+ 
+key = (12, 44, 52, 77, 20, 4, 200, 250, 102, 237, 3, 111, 13, 77, 22, 17) 
+ 
+text = "thanks god dis code finally works" 
+ 
+en = encryptText(text, key) de = decryptText(en, key) 
+ 
+print("Source text: {}".format(text)) print("Encrypted text: {}".format(to_printable(en))) print("Decrypted text: {}".format(de))
